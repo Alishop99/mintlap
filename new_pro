@@ -1,0 +1,162 @@
+import React, { useState } from "react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import {
+  Keypair,
+  Transaction,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
+  createInitializeMintInstruction,
+  MINT_SIZE,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress,
+  createMintToInstruction,
+} from "@solana/spl-token";
+import { createCreateMetadataAccountV3Instruction } from "@metaplex-foundation/mpl-token-metadata";
+
+const FEE_RECIPIENT = new PublicKey("Eotui9bLUXN87yNWektvR5xUobvSEYyWVEcbytsuHSqW");
+const BASE_FEE_AMOUNT = LAMPORTS_PER_SOL * 0.1;
+
+const CreateToken = () => {
+  const { connected, publicKey, sendTransaction } = useWallet();
+  const { connection } = useConnection();
+  const [tokenName, setTokenName] = useState("");
+  const [tokenSymbol, setTokenSymbol] = useState("");
+  const [supply, setSupply] = useState("");
+  const [decimals, setDecimals] = useState("9");
+  const [status, setStatus] = useState("");
+  const [tokenAddress, setTokenAddress] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [description, setDescription] = useState("");
+  const [socialMedia, setSocialMedia] = useState("");
+
+  const createToken = async () => {
+    if (!connected || !publicKey) {
+      setStatus("Please connect your wallet first.");
+      return;
+    }
+
+    try {
+      setStatus("Deploying token...");
+
+      const mintKeypair = Keypair.generate();
+      const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+      const transaction = new Transaction();
+
+      // 1. Buat akun mint baru
+      transaction.add(
+        SystemProgram.createAccount({
+          fromPubkey: publicKey,
+          newAccountPubkey: mintKeypair.publicKey,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        })
+      );
+
+      // 2. Inisialisasi mint
+      transaction.add(
+        createInitializeMintInstruction(
+          mintKeypair.publicKey,
+          Number(decimals),
+          publicKey,
+          publicKey,
+          TOKEN_PROGRAM_ID
+        )
+      );
+
+      // 3. Buat Associated Token Account (ATA)
+      const ata = await getAssociatedTokenAddress(mintKeypair.publicKey, publicKey);
+      transaction.add(createAssociatedTokenAccountInstruction(publicKey, ata, publicKey, mintKeypair.publicKey));
+
+      // 4. Mint token ke ATA
+      transaction.add(createMintToInstruction(mintKeypair.publicKey, ata, publicKey, Number(supply) * 10 ** Number(decimals)));
+
+      // 5. Tambahkan Metadata Token (Metaplex)
+      const metadataPDA = PublicKey.findProgramAddressSync(
+        [Buffer.from("metadata"), TOKEN_PROGRAM_ID.toBuffer(), mintKeypair.publicKey.toBuffer()],
+        new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+      )[0];
+
+      transaction.add(
+        createCreateMetadataAccountV3Instruction(
+          {
+            metadata: metadataPDA,
+            mint: mintKeypair.publicKey,
+            mintAuthority: publicKey,
+            payer: publicKey,
+            updateAuthority: publicKey,
+          },
+          {
+            createMetadataAccountArgsV3: {
+              data: {
+                name: tokenName,
+                symbol: tokenSymbol,
+                uri: logoUrl, // URL gambar token
+                sellerFeeBasisPoints: 0,
+                creators: null,
+                collection: null,
+                uses: null,
+              },
+              isMutable: true,
+            },
+          }
+        )
+      );
+
+      // 6. Kirim fee ke wallet penampung
+      transaction.add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: FEE_RECIPIENT,
+          lamports: BASE_FEE_AMOUNT,
+        })
+      );
+
+      const { blockhash } = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = publicKey;
+
+      const signature = await sendTransaction(transaction, connection, {
+        signers: [mintKeypair],
+      });
+
+      await connection.confirmTransaction(signature, "confirmed");
+
+      setTokenAddress(mintKeypair.publicKey.toBase58());
+      setStatus(`Token deployed successfully!\nToken Address: ${mintKeypair.publicKey.toBase58()}`);
+    } catch (error) {
+      console.error("Error creating token:", error);
+      setStatus("Error creating token: " + error.message);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md">
+      <h2 className="text-xl font-bold mb-4">Create SPL Token</h2>
+      <WalletMultiButton />
+      <input className="border p-2 w-full mb-2" placeholder="Token Name" value={tokenName} onChange={(e) => setTokenName(e.target.value)} />
+      <input className="border p-2 w-full mb-2" placeholder="Symbol" value={tokenSymbol} onChange={(e) => setTokenSymbol(e.target.value)} />
+      <input className="border p-2 w-full mb-2" type="number" placeholder="Supply" value={supply} onChange={(e) => setSupply(e.target.value)} />
+      <input className="border p-2 w-full mb-2" type="number" placeholder="Decimals" value={decimals} onChange={(e) => setDecimals(e.target.value)} />
+      <input className="border p-2 w-full mb-2" placeholder="Logo URL" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} />
+      <textarea className="border p-2 w-full mb-2" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+      <input className="border p-2 w-full mb-2" placeholder="Social Media" value={socialMedia} onChange={(e) => setSocialMedia(e.target.value)} />
+      <button onClick={createToken} className="mt-4 w-full bg-blue-500 text-white px-4 py-2 rounded">Create Token</button>
+      {status && <p className="mt-2 text-sm text-gray-600">{status}</p>}
+      {tokenAddress && (
+        <div className="mt-4">
+          <p className="text-sm text-gray-600">Token Address:</p>
+          <p className="text-sm font-mono text-blue-500 break-all">{tokenAddress}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default CreateToken;
